@@ -1,0 +1,21 @@
+# Linting workflow triggered when PR is opened    
+2
+name: code checking    
+3
+    
+4
+# run on pull request    
+5
+on:    
+6
+  pull_request:    
+7
+    branches:    
+8
+      - main    
+9
+    
+10
+# run install and lint steps from makefile    
+11
+jobs:    
