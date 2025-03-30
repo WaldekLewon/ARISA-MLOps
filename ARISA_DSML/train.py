@@ -21,9 +21,10 @@ from ARISA_DSML.config import (
     target,
 )
 from ARISA_DSML.helpers import get_git_commit_hash
+import nannyml as nml
 
 
-# comment to trigger workflow ver4
+# comment to trigger workflow ver6
 
 def run_hyperopt(X_train:pd.DataFrame, y_train:pd.DataFrame, categorical_indices:list[int], test_size:float=0.25, n_trials:int=20, overwrite:bool=False)->str|Path:  # noqa: PLR0913
     """Run optuna hyperparameter tuning."""
@@ -170,6 +171,42 @@ def train(X_train:pd.DataFrame, y_train:pd.DataFrame, categorical_indices:list[i
             ytitle="Logloss",
         )
         mlflow.log_figure(fig2, "test-logloss-mean_vs_iterations.png")
+        
+        """----------NannyML----------"""
+        # Model monitoring initialization
+        reference_df = X_train.copy()
+        reference_df["prediction"] = model.predict(X_train)
+        reference_df["predicted_probability"] = [p[1] for p in model.predict_proba(X_train)]
+        reference_df[target] = y_train
+        col_names = reference_df.drop(columns=["prediction", target, "predicted_probability"]).columns
+        chunk_size = 50
+
+        # univariate drift for features
+        udc = nml.UnivariateDriftCalculator(
+            column_names=X_train.drop("PassengerId", axis=1).columns,
+            chunk_size=chunk_size,
+        )
+        udc.fit(reference_df.drop(columns=["prediction", target, "predicted_probability"]))
+
+        # Confidence-based Performance Estimation for target
+        estimator = nml.CBPE(
+            problem_type="classification_binary",
+            y_pred_proba="predicted_probability",
+            y_pred="prediction",
+            y_true=target,
+            metrics=["roc_auc"],
+            chunk_size=chunk_size,
+        )
+        estimator = estimator.fit(reference_df)
+
+        store = nml.io.store.FilesystemStore(root_path=str(MODELS_DIR))
+        store.store(udc, filename="udc.pkl")
+        store.store(estimator, filename="estimator.pkl")
+        
+        mlflow.log_artifact(MODELS_DIR / "udc.pkl")
+        mlflow.log_artifact(MODELS_DIR / "estimator.pkl")
+        
+
 
     return (model_path, model_params_path)
 
@@ -279,7 +316,7 @@ def get_or_create_experiment(experiment_name:str):
 
 
 if __name__=="__main__":
-    # for running in workflow in actions
+    # for running in workflow in actions again again
     df_train = pd.read_csv(PROCESSED_DATA_DIR / "train.csv")
 
     y_train = df_train.pop(target)
@@ -293,7 +330,8 @@ if __name__=="__main__":
     cv_output_path = train_cv(X_train, y_train, categorical_indices, params)
     cv_results = pd.read_csv(cv_output_path)
 
-    # here we would evaluate if model train run mean metric test score is above previous test score
+    experiment_id = get_or_create_experiment("titanic_full_training")
+    mlflow.set_experiment(experiment_id=experiment_id)
     model_path, model_params_path = train(X_train, y_train, categorical_indices, params, cv_results=cv_results)
 
     cv_results = pd.read_csv(cv_output_path)
